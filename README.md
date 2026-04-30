@@ -185,13 +185,13 @@ npm run tauri build -- --bundles deb
 The generated Debian package is written to:
 
 ```txt
-src-tauri/target/release/bundle/deb/Focusapp_0.1.0_amd64.deb
+src-tauri/target/release/bundle/deb/Focusapp_0.1.1_amd64.deb
 ```
 
 Install it locally:
 
 ```sh
-sudo apt install ./src-tauri/target/release/bundle/deb/Focusapp_0.1.0_amd64.deb
+sudo apt install ./src-tauri/target/release/bundle/deb/Focusapp_0.1.1_amd64.deb
 ```
 
 After installation, the executable is available at:
@@ -216,6 +216,6 @@ If you copy `Focusapp.desktop` to `~/Desktop` on GNOME and see an "Untrusted Des
 
 ## Notes
 
-- This project is private and currently marked as version `0.1.0`.
+- This project is private and currently marked as version `0.1.1`.
 - The Tauri window is configured for a compact timer layout.
 - Generated folders such as `dist/`, `node_modules/`, and `src-tauri/target/` should not be edited by hand.

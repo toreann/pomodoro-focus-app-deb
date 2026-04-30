@@ -1,8 +1,31 @@
 use std::{fs, path::Path};
 
-use tauri::Manager;
+use tauri::{Manager, PhysicalPosition, PhysicalSize};
 
 const DATABASE_FILE_NAME: &str = "focusapp.db";
+
+fn resize_main_window_to_display_height(app: &tauri::App) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) else {
+        return Ok(());
+    };
+
+    let work_area = monitor.work_area();
+    let current_size = window.inner_size()?;
+    let width = current_size.width.min(work_area.size.width);
+    let x_offset = ((work_area.size.width.saturating_sub(width)) / 2) as i32;
+
+    window.set_size(PhysicalSize::new(width, work_area.size.height))?;
+    window.set_position(PhysicalPosition::new(
+        work_area.position.x + x_offset,
+        work_area.position.y,
+    ))?;
+
+    Ok(())
+}
 
 fn copy_sidecar_file(source_db: &Path, target_db: &Path, suffix: &str) -> Result<(), String> {
     let Some(source_name) = source_db.file_name() else {
@@ -66,6 +89,10 @@ fn focusapp_database_url(app: tauri::AppHandle) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![focusapp_database_url])
+        .setup(|app| {
+            resize_main_window_to_display_height(app)?;
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .run(tauri::generate_context!())
