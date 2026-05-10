@@ -1,6 +1,9 @@
 import {
+  ArrowLeft,
+  BarChart3,
   CheckCircle2,
   Flame,
+  Gamepad2,
   GripVertical,
   Hammer,
   ListTodo,
@@ -39,12 +42,19 @@ import {
   PRESET_ROUTINES,
   useFocusStore,
 } from "./store/focusStore";
-import type { Settings, Task, ThemePreference } from "./types";
+import type { FocusHistoryDay, NonProductivityCategory, NonProductivityHistoryDay, Settings, Task, ThemePreference } from "./types";
 import { useTimer } from "./hooks/useTimer";
-import { formatCompactDuration, formatDuration, formatFinishTime } from "./lib/time";
+import { formatCompactDuration, formatDuration, formatFinishTime, formatHistoryDayLabel } from "./lib/time";
 
 const emojiChoices = ["⚒️", "🔥", "✨", "🐾", "📓", "☕", "🗡️", "🪣"];
 const COMPLETION_CHIME_INTERVAL_MS = 1800;
+const DEFAULT_FREE_FOCUS_BREAK_MINUTES = 25;
+const MIN_FREE_FOCUS_BREAK_MINUTES = 1;
+const MAX_FREE_FOCUS_BREAK_MINUTES = 240;
+const DEFAULT_GAME_CONTROL_MINUTES = 30;
+const MIN_GAME_CONTROL_MINUTES = 1;
+const MAX_GAME_CONTROL_MINUTES = 480;
+const NON_PRODUCTIVITY_CATEGORIES: NonProductivityCategory[] = ["Game", "Social media", "Binge", "Series", "Other"];
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "ember", label: "Minimal" },
   { value: "slate", label: "Slate" },
@@ -126,6 +136,8 @@ function playCongratsChime() {
 function App() {
   const {
     tasks,
+    focusHistory,
+    nonProductivityHistory,
     settings,
     isHydrated,
     isRunning,
@@ -146,22 +158,43 @@ function App() {
     reorderQueuedTask,
     setActiveRemaining,
     adjustActiveTime,
+    addFocusTime,
+    addNonProductivityTime,
     updateSettings,
     clearStorageError,
   } = useFocusStore();
 
+  const [currentPage, setCurrentPage] = useState<"timer" | "history">("timer");
   const [taskName, setTaskName] = useState("");
   const [taskEmoji, setTaskEmoji] = useState("⚒️");
   const [durationMinutes, setDurationMinutes] = useState(settings.defaultDurationMinutes);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
+  const [freeFocusModalOpen, setFreeFocusModalOpen] = useState(false);
+  const [freeFocusBreakMinutes, setFreeFocusBreakMinutes] = useState(DEFAULT_FREE_FOCUS_BREAK_MINUTES);
+  const [freeFocusDraftMinutes, setFreeFocusDraftMinutes] = useState(DEFAULT_FREE_FOCUS_BREAK_MINUTES);
+  const [freeFocusStartedAt, setFreeFocusStartedAt] = useState<number | null>(null);
+  const [freeFocusElapsedSeconds, setFreeFocusElapsedSeconds] = useState(0);
+  const [freeFocusBreakDue, setFreeFocusBreakDue] = useState(false);
+  const [gameControlModalOpen, setGameControlModalOpen] = useState(false);
+  const [gameControlLimitMinutes, setGameControlLimitMinutes] = useState(DEFAULT_GAME_CONTROL_MINUTES);
+  const [gameControlDraftMinutes, setGameControlDraftMinutes] = useState(DEFAULT_GAME_CONTROL_MINUTES);
+  const [gameControlCategory, setGameControlCategory] = useState<NonProductivityCategory>("Game");
+  const [gameControlDraftCategory, setGameControlDraftCategory] = useState<NonProductivityCategory>("Game");
+  const [gameControlStartedAt, setGameControlStartedAt] = useState<number | null>(null);
+  const [gameControlElapsedSeconds, setGameControlElapsedSeconds] = useState(0);
+  const [gameControlLimitReached, setGameControlLimitReached] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const finishedToastTaskId = useRef<string | null>(null);
+  const freeFocusPersistedSeconds = useRef(0);
+  const gameControlPersistedSeconds = useRef(0);
 
   const activeTask = useMemo(() => getActiveTask(tasks), [tasks]);
   const queued = useMemo(() => getQueuedTasks(tasks), [tasks]);
   const completed = useMemo(() => getCompletedTasks(tasks), [tasks]);
+  const freeFocusRunning = freeFocusStartedAt !== null;
+  const gameControlRunning = gameControlStartedAt !== null;
 
   const timer = useTimer({
     activeTask,
@@ -174,6 +207,7 @@ function App() {
     onComplete: completeActive,
     onSetRemaining: setActiveRemaining,
     onAdjustTime: adjustActiveTime,
+    onFocusElapsed: addFocusTime,
   });
 
   const displayActiveTask = useMemo(
@@ -258,6 +292,216 @@ function App() {
     return () => window.clearInterval(interval);
   }, [addToast, displayActiveTask, settings.soundEnabled, timerIsDone]);
 
+  useEffect(() => {
+    if (!freeFocusStartedAt) {
+      return;
+    }
+
+    const breakAfterSeconds = freeFocusBreakMinutes * 60;
+
+    const syncFreeFocus = () => {
+      const nextElapsedSeconds = Math.max(0, Math.floor((Date.now() - freeFocusStartedAt) / 1000));
+      setFreeFocusElapsedSeconds(nextElapsedSeconds);
+
+      if (nextElapsedSeconds > freeFocusPersistedSeconds.current) {
+        const elapsedDelta = nextElapsedSeconds - freeFocusPersistedSeconds.current;
+        freeFocusPersistedSeconds.current = nextElapsedSeconds;
+        void addFocusTime(elapsedDelta);
+      }
+
+      if (nextElapsedSeconds >= breakAfterSeconds) {
+        setFreeFocusBreakDue(true);
+      }
+    };
+
+    syncFreeFocus();
+    const interval = window.setInterval(syncFreeFocus, 250);
+
+    return () => window.clearInterval(interval);
+  }, [addFocusTime, freeFocusBreakMinutes, freeFocusStartedAt]);
+
+  useEffect(() => {
+    if (!freeFocusBreakDue) {
+      return;
+    }
+
+    addToast({
+      title: "Break reminder",
+      detail: "Your focus interval is done. Stop the timer when you are ready.",
+      tone: "warning",
+    });
+
+    if (!settings.soundEnabled) {
+      return;
+    }
+
+    playCompletionChime();
+    const interval = window.setInterval(playCompletionChime, COMPLETION_CHIME_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [addToast, freeFocusBreakDue, settings.soundEnabled]);
+
+  useEffect(() => {
+    if (!gameControlStartedAt) {
+      return;
+    }
+
+    const limitSeconds = gameControlLimitMinutes * 60;
+
+    const syncGameControl = () => {
+      const nextElapsedSeconds = Math.max(0, Math.floor((Date.now() - gameControlStartedAt) / 1000));
+      setGameControlElapsedSeconds(nextElapsedSeconds);
+
+      if (nextElapsedSeconds > gameControlPersistedSeconds.current) {
+        const elapsedDelta = nextElapsedSeconds - gameControlPersistedSeconds.current;
+        gameControlPersistedSeconds.current = nextElapsedSeconds;
+        void addNonProductivityTime(gameControlCategory, elapsedDelta);
+      }
+
+      if (nextElapsedSeconds >= limitSeconds) {
+        setGameControlLimitReached(true);
+      }
+    };
+
+    syncGameControl();
+    const interval = window.setInterval(syncGameControl, 250);
+
+    return () => window.clearInterval(interval);
+  }, [addNonProductivityTime, gameControlCategory, gameControlLimitMinutes, gameControlStartedAt]);
+
+  useEffect(() => {
+    if (!gameControlLimitReached) {
+      return;
+    }
+
+    addToast({
+      title: "Pastime Control limit reached",
+      detail: "Your No-count timer reached the limit. Stop it when you are done.",
+      tone: "warning",
+    });
+
+    if (!settings.soundEnabled) {
+      return;
+    }
+
+    playCompletionChime();
+    const interval = window.setInterval(playCompletionChime, COMPLETION_CHIME_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [addToast, gameControlLimitReached, settings.soundEnabled]);
+
+  function openFreeFocusModal() {
+    if (gameControlRunning) {
+      return;
+    }
+
+    setFreeFocusDraftMinutes(freeFocusBreakMinutes);
+    setFreeFocusModalOpen(true);
+    setGameControlModalOpen(false);
+    setSettingsOpen(false);
+    setPresetsOpen(false);
+  }
+
+  function handleStartFreeFocus(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (activeTask || freeFocusRunning || gameControlRunning) {
+      return;
+    }
+
+    const safeMinutes = Math.min(
+      MAX_FREE_FOCUS_BREAK_MINUTES,
+      Math.max(MIN_FREE_FOCUS_BREAK_MINUTES, Math.round(Number(freeFocusDraftMinutes) || DEFAULT_FREE_FOCUS_BREAK_MINUTES)),
+    );
+
+    freeFocusPersistedSeconds.current = 0;
+    setFreeFocusBreakMinutes(safeMinutes);
+    setFreeFocusElapsedSeconds(0);
+    setFreeFocusBreakDue(false);
+    setFreeFocusStartedAt(Date.now());
+    setFreeFocusModalOpen(false);
+    addToast({
+      title: "Focus timer started",
+      detail: `Break reminder set for ${safeMinutes} minutes.`,
+      tone: "info",
+    });
+  }
+
+  function stopFreeFocus() {
+    if (freeFocusStartedAt) {
+      const finalElapsedSeconds = Math.max(0, Math.floor((Date.now() - freeFocusStartedAt) / 1000));
+      if (finalElapsedSeconds > freeFocusPersistedSeconds.current) {
+        void addFocusTime(finalElapsedSeconds - freeFocusPersistedSeconds.current);
+      }
+    }
+
+    setFreeFocusStartedAt(null);
+    setFreeFocusElapsedSeconds(0);
+    setFreeFocusBreakDue(false);
+    freeFocusPersistedSeconds.current = 0;
+    addToast({
+      title: "Focus timer stopped",
+      detail: "The no-task timer is idle again.",
+      tone: "info",
+    });
+  }
+
+  function openGameControlModal() {
+    if (freeFocusRunning) {
+      return;
+    }
+
+    setGameControlDraftMinutes(gameControlLimitMinutes);
+    setGameControlDraftCategory(gameControlCategory);
+    setGameControlModalOpen(true);
+    setFreeFocusModalOpen(false);
+    setSettingsOpen(false);
+    setPresetsOpen(false);
+  }
+
+  function handleStartGameControl(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (activeTask || freeFocusRunning || gameControlRunning) {
+      return;
+    }
+
+    const safeMinutes = Math.min(
+      MAX_GAME_CONTROL_MINUTES,
+      Math.max(MIN_GAME_CONTROL_MINUTES, Math.round(Number(gameControlDraftMinutes) || DEFAULT_GAME_CONTROL_MINUTES)),
+    );
+
+    gameControlPersistedSeconds.current = 0;
+    setGameControlLimitMinutes(safeMinutes);
+    setGameControlCategory(gameControlDraftCategory);
+    setGameControlElapsedSeconds(0);
+    setGameControlLimitReached(false);
+    setGameControlStartedAt(Date.now());
+    setGameControlModalOpen(false);
+    addToast({
+      title: "Pastime Control started",
+      detail: `${gameControlDraftCategory} limit set for ${safeMinutes} minutes.`,
+      tone: "info",
+    });
+  }
+
+  function stopGameControl() {
+    if (gameControlStartedAt) {
+      const finalElapsedSeconds = Math.max(0, Math.floor((Date.now() - gameControlStartedAt) / 1000));
+      if (finalElapsedSeconds > gameControlPersistedSeconds.current) {
+        void addNonProductivityTime(gameControlCategory, finalElapsedSeconds - gameControlPersistedSeconds.current);
+      }
+    }
+
+    setGameControlStartedAt(null);
+    setGameControlElapsedSeconds(0);
+    setGameControlLimitReached(false);
+    gameControlPersistedSeconds.current = 0;
+    addToast({
+      title: "Pastime Control stopped",
+      detail: "No-count time was recorded.",
+      tone: "info",
+    });
+  }
+
   async function handleAddTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await addTask({
@@ -281,13 +525,28 @@ function App() {
 
       <div className="app-layout relative mx-auto flex min-h-screen w-full flex-col">
         <header className="app-shell compact-header">
-          <div className="flex items-center gap-3">
-            <div className="brand-mark" aria-hidden="true">
-              <Hammer size={20} />
+          <div className="header-title-row">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="brand-mark" aria-hidden="true">
+                <Hammer size={20} />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-xl font-black leading-none text-[var(--ink-strong)]">Focusapp</h1>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-black leading-none text-[var(--ink-strong)]">Focusapp</h1>
-            </div>
+            <button
+              className="subtle-button compact history-nav-button"
+              type="button"
+              onClick={() => {
+                setCurrentPage("history");
+                setSettingsOpen(false);
+                setPresetsOpen(false);
+              }}
+              disabled={currentPage === "history"}
+            >
+              <BarChart3 size={16} />
+              Productivity History
+            </button>
           </div>
 
           <div className="compact-metrics">
@@ -308,88 +567,109 @@ function App() {
           </div>
         ) : null}
 
-        <section className="grid flex-1 gap-3">
-          <TimerPanel
-            activeTask={displayActiveTask}
-            isHydrated={isHydrated}
-            isRunning={isRunning}
-            isDone={timerIsDone}
-            shouldHighlightComplete={timerIsDone}
-            progress={timer.progress}
-            overtimeSeconds={timer.overtimeSeconds}
-            theme={settings.theme}
-            onStart={timer.start}
-            onPause={timer.pause}
-            onResume={timer.resume}
-            onReset={timer.reset}
-            onComplete={timer.complete}
-            onAddFiveMinutes={timer.addFiveMinutes}
-            onSubtractFiveMinutes={timer.subtractFiveMinutes}
+        {currentPage === "history" ? (
+          <HistoryPage
+            focusHistory={focusHistory}
+            nonProductivityHistory={nonProductivityHistory}
+            onBack={() => setCurrentPage("timer")}
           />
-
-          <div className="flex min-w-0 flex-col gap-3">
-            <form className="app-shell compact-section grid gap-3" onSubmit={handleAddTask}>
-              <div className="task-form-header">
-                <div>
-                  <h2 className="panel-title">New task</h2>
-                </div>
-                <div className="form-actions">
-                  <button className="subtle-button" type="button" onClick={() => setPresetsOpen(true)}>
-                    <Sparkles size={17} />
-                    Presets
-                  </button>
-                  <button className="primary-button" type="submit">
-                    <Plus size={18} />
-                    Add task
-                  </button>
-                </div>
-              </div>
-
-              <div className="task-form-fields">
-                <label className="field">
-                  <span>Task name</span>
-                  <input
-                    value={taskName}
-                    onChange={(event) => setTaskName(event.target.value)}
-                    placeholder="What are you focusing on?"
-                  />
-                </label>
-                <label className="field">
-                  <span>Emoji</span>
-                  <select value={taskEmoji} onChange={(event) => setTaskEmoji(event.target.value)}>
-                    {emojiChoices.map((emoji) => (
-                      <option key={emoji} value={emoji}>
-                        {emoji}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Minutes</span>
-                  <input
-                    min="1"
-                    max="240"
-                    type="number"
-                    value={durationMinutes}
-                    onChange={(event) => setDurationMinutes(Number(event.target.value))}
-                  />
-                </label>
-              </div>
-            </form>
-
-            <QueuePanel
+        ) : (
+          <section className="grid flex-1 gap-3">
+            <TimerPanel
               activeTask={displayActiveTask}
-              queued={queued}
-              completed={completed}
-              onDelete={deleteTask}
-              onUpdateQueuedTask={updateQueuedTask}
-              onClearQueuedTasks={clearQueuedTasks}
-              onClearCompletedTasks={clearCompletedTasks}
-              onReorder={reorderQueuedTask}
+              isHydrated={isHydrated}
+              isRunning={isRunning}
+              isDone={timerIsDone}
+              shouldHighlightComplete={timerIsDone}
+              progress={timer.progress}
+              overtimeSeconds={timer.overtimeSeconds}
+              freeFocusRunning={freeFocusRunning}
+              freeFocusBreakDue={freeFocusBreakDue}
+              freeFocusElapsedSeconds={freeFocusElapsedSeconds}
+              freeFocusBreakMinutes={freeFocusBreakMinutes}
+              gameControlRunning={gameControlRunning}
+              gameControlLimitReached={gameControlLimitReached}
+              gameControlElapsedSeconds={gameControlElapsedSeconds}
+              gameControlLimitMinutes={gameControlLimitMinutes}
+              gameControlCategory={gameControlCategory}
+              hasQueuedTasks={queued.length > 0}
+              theme={settings.theme}
+              onStart={timer.start}
+              onPause={timer.pause}
+              onResume={timer.resume}
+              onReset={timer.reset}
+              onComplete={timer.complete}
+              onAddFiveMinutes={timer.addFiveMinutes}
+              onSubtractFiveMinutes={timer.subtractFiveMinutes}
+              onOpenFreeFocus={openFreeFocusModal}
+              onStopFreeFocus={stopFreeFocus}
+              onOpenGameControl={openGameControlModal}
+              onStopGameControl={stopGameControl}
             />
 
-          </div>
-        </section>
+            <div className="flex min-w-0 flex-col gap-3">
+              <form className="app-shell compact-section grid gap-3" onSubmit={handleAddTask}>
+                <div className="task-form-header">
+                  <div>
+                    <h2 className="panel-title">New task</h2>
+                  </div>
+                  <div className="form-actions">
+                    <button className="subtle-button" type="button" onClick={() => setPresetsOpen(true)}>
+                      <Sparkles size={17} />
+                      Presets
+                    </button>
+                    <button className="primary-button" type="submit">
+                      <Plus size={18} />
+                      Add task
+                    </button>
+                  </div>
+                </div>
+
+                <div className="task-form-fields">
+                  <label className="field">
+                    <span>Task name</span>
+                    <input
+                      value={taskName}
+                      onChange={(event) => setTaskName(event.target.value)}
+                      placeholder="What are you focusing on?"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Emoji</span>
+                    <select value={taskEmoji} onChange={(event) => setTaskEmoji(event.target.value)}>
+                      {emojiChoices.map((emoji) => (
+                        <option key={emoji} value={emoji}>
+                          {emoji}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Minutes</span>
+                    <input
+                      min="1"
+                      max="240"
+                      type="number"
+                      value={durationMinutes}
+                      onChange={(event) => setDurationMinutes(Number(event.target.value))}
+                    />
+                  </label>
+                </div>
+              </form>
+
+              <QueuePanel
+                activeTask={displayActiveTask}
+                queued={queued}
+                completed={completed}
+                onDelete={deleteTask}
+                onUpdateQueuedTask={updateQueuedTask}
+                onClearQueuedTasks={clearQueuedTasks}
+                onClearCompletedTasks={clearCompletedTasks}
+                onReorder={reorderQueuedTask}
+              />
+            </div>
+          </section>
+        )}
       </div>
 
       {presetsOpen ? (
@@ -411,6 +691,26 @@ function App() {
       {settingsOpen ? (
         <SettingsPanel settings={settings} onClose={() => setSettingsOpen(false)} onChange={updateSettings} />
       ) : null}
+
+      {freeFocusModalOpen ? (
+        <FreeFocusModal
+          minutes={freeFocusDraftMinutes}
+          onMinutesChange={setFreeFocusDraftMinutes}
+          onClose={() => setFreeFocusModalOpen(false)}
+          onStart={handleStartFreeFocus}
+        />
+      ) : null}
+
+      {gameControlModalOpen ? (
+        <GameControlModal
+          category={gameControlDraftCategory}
+          minutes={gameControlDraftMinutes}
+          onCategoryChange={setGameControlDraftCategory}
+          onMinutesChange={setGameControlDraftMinutes}
+          onClose={() => setGameControlModalOpen(false)}
+          onStart={handleStartGameControl}
+        />
+      ) : null}
     </main>
   );
 }
@@ -427,6 +727,113 @@ function Metric({ label, value, icon }: { label: string; value: string; icon: Re
   );
 }
 
+function HistoryPage({
+  focusHistory,
+  nonProductivityHistory,
+  onBack,
+}: {
+  focusHistory: FocusHistoryDay[];
+  nonProductivityHistory: NonProductivityHistoryDay[];
+  onBack: () => void;
+}) {
+  const totalFocusedSeconds = useMemo(
+    () => focusHistory.reduce((total, day) => total + day.focusedSeconds, 0),
+    [focusHistory],
+  );
+  const totalNonProductiveSeconds = useMemo(
+    () => nonProductivityHistory.reduce((total, day) => total + day.seconds, 0),
+    [nonProductivityHistory],
+  );
+
+  return (
+    <section className="history-page app-shell compact-section">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <button className="icon-button" type="button" title="Back to timer" aria-label="Back to timer" onClick={onBack}>
+          <ArrowLeft size={20} />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="eyebrow">Productivity history</p>
+          <h2 className="panel-title">Focused by day</h2>
+        </div>
+        <div className="history-total" aria-label={`Total focus time ${formatCompactDuration(totalFocusedSeconds)}`}>
+          <span>Total</span>
+          <strong>{formatCompactDuration(totalFocusedSeconds)}</strong>
+        </div>
+      </div>
+
+      {focusHistory.length > 0 ? (
+        <div className="history-list">
+          {focusHistory.map((day) => (
+            <article className="history-row" key={day.date}>
+              <div className="min-w-0">
+                <h3>{formatHistoryDayLabel(day.date)}</h3>
+                <p>{day.date}</p>
+              </div>
+              <strong>{formatCompactDuration(day.focusedSeconds)}</strong>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">
+          <BarChart3 size={22} />
+          <span>
+            <strong>No focus time recorded yet.</strong>
+            <span>Start a timer and your daily totals will appear here.</span>
+          </span>
+        </div>
+      )}
+
+      <div className="no-count-history">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="eyebrow danger-eyebrow">No-count</p>
+            <h2 className="panel-title">Non-productivity history</h2>
+          </div>
+          <div className="history-total no-count-total" aria-label={`No-count time ${formatCompactDuration(totalNonProductiveSeconds)}`}>
+            <span>No-count</span>
+            <strong>{formatCompactDuration(totalNonProductiveSeconds)}</strong>
+          </div>
+        </div>
+
+        {nonProductivityHistory.length > 0 ? (
+          <div className="history-list">
+            {nonProductivityHistory.map((day) => (
+              <article className="history-row no-count-row" key={day.date}>
+                <div className="min-w-0">
+                  <div className="history-row-heading">
+                    <h3>{formatHistoryDayLabel(day.date)}</h3>
+                    <span>No-count</span>
+                  </div>
+                  <p>{day.date}</p>
+                  <p className="category-breakdown">{formatCategoryBreakdown(day.categories)}</p>
+                </div>
+                <strong>{formatCompactDuration(day.seconds)}</strong>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state no-count-empty">
+            <Gamepad2 size={22} />
+            <span>
+              <strong>No No-count time recorded yet.</strong>
+              <span>Pastime Control sessions will appear here.</span>
+            </span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function formatCategoryBreakdown(categories: NonProductivityHistoryDay["categories"]) {
+  const categoryLabels = NON_PRODUCTIVITY_CATEGORIES.flatMap((category) => {
+    const seconds = categories[category] ?? 0;
+    return seconds > 0 ? [`${category}: ${formatCompactDuration(seconds)}`] : [];
+  });
+
+  return categoryLabels.length > 0 ? categoryLabels.join(" · ") : "No categories yet";
+}
+
 function TimerPanel({
   activeTask,
   isHydrated,
@@ -435,6 +842,16 @@ function TimerPanel({
   shouldHighlightComplete,
   progress,
   overtimeSeconds,
+  freeFocusRunning,
+  freeFocusBreakDue,
+  freeFocusElapsedSeconds,
+  freeFocusBreakMinutes,
+  gameControlRunning,
+  gameControlLimitReached,
+  gameControlElapsedSeconds,
+  gameControlLimitMinutes,
+  gameControlCategory,
+  hasQueuedTasks,
   theme,
   onStart,
   onPause,
@@ -443,6 +860,10 @@ function TimerPanel({
   onComplete,
   onAddFiveMinutes,
   onSubtractFiveMinutes,
+  onOpenFreeFocus,
+  onStopFreeFocus,
+  onOpenGameControl,
+  onStopGameControl,
 }: {
   activeTask: Task | null;
   isHydrated: boolean;
@@ -451,6 +872,16 @@ function TimerPanel({
   shouldHighlightComplete: boolean;
   progress: number;
   overtimeSeconds: number;
+  freeFocusRunning: boolean;
+  freeFocusBreakDue: boolean;
+  freeFocusElapsedSeconds: number;
+  freeFocusBreakMinutes: number;
+  gameControlRunning: boolean;
+  gameControlLimitReached: boolean;
+  gameControlElapsedSeconds: number;
+  gameControlLimitMinutes: number;
+  gameControlCategory: NonProductivityCategory;
+  hasQueuedTasks: boolean;
   theme: ThemePreference;
   onStart: () => Promise<void>;
   onPause: () => Promise<void>;
@@ -459,8 +890,45 @@ function TimerPanel({
   onComplete: () => Promise<void>;
   onAddFiveMinutes: () => Promise<void>;
   onSubtractFiveMinutes: () => Promise<void>;
+  onOpenFreeFocus: () => void;
+  onStopFreeFocus: () => void;
+  onOpenGameControl: () => void;
+  onStopGameControl: () => void;
 }) {
   const idleThemeState = THEME_TIMER_STATES[theme];
+  const freeFocusBreakSeconds = freeFocusBreakMinutes * 60;
+  const gameControlLimitSeconds = gameControlLimitMinutes * 60;
+  const noTaskTimerRunning = freeFocusRunning || gameControlRunning;
+  const timerTitle = activeTask
+    ? activeTask.name
+    : gameControlRunning
+      ? `${gameControlCategory} control`
+      : freeFocusRunning
+        ? "Free focus timer"
+        : idleThemeState.idleTitle;
+  const timerStatus = activeTask
+    ? isRunning
+      ? "Running"
+      : isDone
+        ? "Ready"
+        : "Idle"
+    : gameControlLimitReached
+      ? "No-count limit"
+      : gameControlRunning
+        ? "Running"
+        : freeFocusBreakDue
+          ? "Break due"
+          : freeFocusRunning
+            ? "Running"
+            : "Idle";
+  const timerProgress = activeTask
+    ? progress
+    : gameControlRunning
+      ? Math.min(100, (gameControlElapsedSeconds / gameControlLimitSeconds) * 100)
+      : freeFocusRunning
+        ? Math.min(100, (freeFocusElapsedSeconds / freeFocusBreakSeconds) * 100)
+        : 0;
+  const timerAttention = freeFocusBreakDue || gameControlLimitReached;
 
   return (
     <section className="timer-panel app-shell compact-section relative flex flex-col justify-between overflow-hidden">
@@ -468,29 +936,59 @@ function TimerPanel({
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="eyebrow">Active task</p>
-          <h2 className="panel-title">{activeTask ? activeTask.name : idleThemeState.idleTitle}</h2>
+          <h2 className="panel-title">{timerTitle}</h2>
         </div>
-        <div className="status-pill">
-          {isRunning ? <Flame size={16} /> : <TimerReset size={16} />}
-          {isRunning ? "Running" : isDone ? "Ready" : "Idle"}
+        <div className={`status-pill ${timerAttention ? "attention" : ""}`}>
+          {activeTask ? (
+            isRunning ? (
+              <Flame size={16} />
+            ) : (
+              <TimerReset size={16} />
+            )
+          ) : gameControlRunning ? (
+            <Gamepad2 size={16} />
+          ) : freeFocusRunning ? (
+            <Flame size={16} />
+          ) : (
+            <TimerReset size={16} />
+          )}
+          {timerStatus}
         </div>
       </div>
 
       <div className="grid place-items-center py-4">
-        <div className="timer-ring" style={{ "--progress": `${progress}%` } as CSSProperties}>
+        <div className="timer-ring" style={{ "--progress": `${timerProgress}%` } as CSSProperties}>
           <div className="timer-core">
             <span className="text-4xl" aria-hidden="true">
-              {activeTask?.emoji ?? idleThemeState.idleEmoji}
+              {activeTask?.emoji ?? (gameControlRunning ? "🎮" : freeFocusRunning ? "◎" : idleThemeState.idleEmoji)}
             </span>
-            <strong className="timer-time">{activeTask ? formatDuration(activeTask.remainingSeconds) : "--:--"}</strong>
+            <strong className="timer-time">
+              {activeTask
+                ? formatDuration(activeTask.remainingSeconds)
+                : gameControlRunning
+                  ? formatDuration(gameControlElapsedSeconds)
+                  : freeFocusRunning
+                    ? formatDuration(freeFocusElapsedSeconds)
+                    : "--:--"}
+            </strong>
             {isDone && overtimeSeconds > 0 ? (
               <span className="overtime-pill">+{formatDuration(overtimeSeconds)} overtime</span>
             ) : null}
+            {freeFocusBreakDue ? <span className="overtime-pill break-due">5m break due</span> : null}
+            {gameControlLimitReached ? <span className="overtime-pill break-due">No-count limit reached</span> : null}
             <span className="max-w-[230px] text-center text-sm font-semibold text-[var(--muted)]">
               {activeTask
                 ? isDone
                   ? "Mark it complete when you are ready."
                   : `${formatCompactDuration(activeTask.durationSeconds)} focus block`
+                : gameControlLimitReached
+                  ? "Stop the timer to silence the chime."
+                  : gameControlRunning
+                    ? `${gameControlCategory} limit at ${formatCompactDuration(gameControlLimitSeconds)}.`
+                : freeFocusBreakDue
+                  ? "Stop the timer to silence the chime."
+                  : freeFocusRunning
+                    ? `Break reminder at ${formatCompactDuration(freeFocusBreakSeconds)}.`
                 : isHydrated
                   ? "Time to get to work."
                   : "Loading..."}
@@ -500,19 +998,29 @@ function TimerPanel({
       </div>
 
       <div className="timer-adjustments">
-        <button className="tool-button" type="button" onClick={() => void onSubtractFiveMinutes()} disabled={!activeTask}>
+        <button className="tool-button" type="button" onClick={() => void onSubtractFiveMinutes()} disabled={!activeTask || noTaskTimerRunning}>
           -5m
         </button>
-        <button className="tool-button" type="button" onClick={() => void onAddFiveMinutes()} disabled={!activeTask}>
+        <button className="tool-button" type="button" onClick={() => void onAddFiveMinutes()} disabled={!activeTask || noTaskTimerRunning}>
           +5m
         </button>
       </div>
 
       <div className="grid gap-2">
-        {!activeTask || isDone ? (
-          <button className="primary-button justify-center" type="button" onClick={() => void onStart()} disabled={isDone}>
+        {gameControlRunning ? (
+          <button className={`primary-button justify-center ${gameControlLimitReached ? "attention" : ""}`} type="button" onClick={onStopGameControl}>
+            <X size={19} />
+            Stop Pastime Control
+          </button>
+        ) : freeFocusRunning ? (
+          <button className={`primary-button justify-center ${freeFocusBreakDue ? "attention" : ""}`} type="button" onClick={onStopFreeFocus}>
+            <X size={19} />
+            Stop timer
+          </button>
+        ) : !activeTask || isDone ? (
+          <button className="primary-button justify-center" type="button" onClick={() => void onStart()} disabled={isDone || !hasQueuedTasks}>
             <Play size={19} />
-            Start
+            Start next task
           </button>
         ) : isRunning ? (
           <button className="primary-button justify-center" type="button" onClick={() => void onPause()}>
@@ -526,23 +1034,153 @@ function TimerPanel({
           </button>
         )}
 
-        <div className="grid grid-cols-2 gap-2">
-          <button className="tool-button" type="button" onClick={() => void onReset()} disabled={!activeTask}>
-            <RotateCcw size={18} />
-            Reset
-          </button>
-          <button
-            className={`tool-button success ${shouldHighlightComplete ? "attention" : ""}`}
-            type="button"
-            onClick={() => void onComplete()}
-            disabled={!activeTask}
-          >
-            <CheckCircle2 size={18} />
-            Complete
-          </button>
-        </div>
+        {activeTask ? (
+          <div className="grid grid-cols-2 gap-2">
+            <button className="tool-button" type="button" onClick={() => void onReset()} disabled={!activeTask}>
+              <RotateCcw size={18} />
+              Reset
+            </button>
+            <button
+              className={`tool-button success ${shouldHighlightComplete ? "attention" : ""}`}
+              type="button"
+              onClick={() => void onComplete()}
+              disabled={!activeTask}
+            >
+              <CheckCircle2 size={18} />
+              Complete
+            </button>
+          </div>
+        ) : !noTaskTimerRunning ? (
+          <div className="grid grid-cols-2 gap-2">
+            <button className="tool-button success" type="button" onClick={onOpenFreeFocus} disabled={!isHydrated || freeFocusRunning}>
+              <Play size={18} />
+              Start focus timer
+            </button>
+            <button className="tool-button danger-accent" type="button" onClick={onOpenGameControl} disabled={!isHydrated || gameControlRunning}>
+              <Gamepad2 size={18} />
+              Pastime Control
+            </button>
+          </div>
+        ) : null}
       </div>
     </section>
+  );
+}
+
+function FreeFocusModal({
+  minutes,
+  onMinutesChange,
+  onClose,
+  onStart,
+}: {
+  minutes: number;
+  onMinutesChange: (minutes: number) => void;
+  onClose: () => void;
+  onStart: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <aside className="preset-backdrop" aria-label="Start focus timer">
+      <form className="free-focus-panel app-shell compact-section" onSubmit={onStart}>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <p className="eyebrow">No-task timer</p>
+            <h2 className="panel-title">When should the break chime play?</h2>
+          </div>
+          <button className="icon-button" type="button" title="Close focus timer setup" onClick={onClose}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <label className="field">
+          <span>Minutes before 5m break</span>
+          <input
+            min={MIN_FREE_FOCUS_BREAK_MINUTES}
+            max={MAX_FREE_FOCUS_BREAK_MINUTES}
+            type="number"
+            value={minutes}
+            onChange={(event) => onMinutesChange(Number(event.target.value))}
+            autoFocus
+          />
+        </label>
+
+        <div className="free-focus-actions">
+          <button className="subtle-button" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            <Play size={18} />
+            Start timer
+          </button>
+        </div>
+      </form>
+    </aside>
+  );
+}
+
+function GameControlModal({
+  category,
+  minutes,
+  onCategoryChange,
+  onMinutesChange,
+  onClose,
+  onStart,
+}: {
+  category: NonProductivityCategory;
+  minutes: number;
+  onCategoryChange: (category: NonProductivityCategory) => void;
+  onMinutesChange: (minutes: number) => void;
+  onClose: () => void;
+  onStart: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <aside className="preset-backdrop" aria-label="Start Pastime Control timer">
+      <form className="free-focus-panel app-shell compact-section" onSubmit={onStart}>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <p className="eyebrow danger-eyebrow">Pastime Control</p>
+            <h2 className="panel-title">Set a No-count limit</h2>
+          </div>
+          <button className="icon-button" type="button" title="Close Pastime Control setup" onClick={onClose}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="grid gap-3">
+          <label className="field">
+            <span>Activity</span>
+            <select value={category} onChange={(event) => onCategoryChange(event.target.value as NonProductivityCategory)}>
+              {NON_PRODUCTIVITY_CATEGORIES.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Allowed minutes</span>
+            <input
+              min={MIN_GAME_CONTROL_MINUTES}
+              max={MAX_GAME_CONTROL_MINUTES}
+              type="number"
+              value={minutes}
+              onChange={(event) => onMinutesChange(Number(event.target.value))}
+              autoFocus
+            />
+          </label>
+        </div>
+
+        <div className="free-focus-actions">
+          <button className="subtle-button" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary-button danger-primary" type="submit">
+            <Gamepad2 size={18} />
+            Start control
+          </button>
+        </div>
+      </form>
+    </aside>
   );
 }
 

@@ -14,6 +14,21 @@ export type Task = {
   updatedAt: number;
 };
 
+export type FocusHistoryDay = {
+  date: string;
+  focusedSeconds: number;
+  updatedAt: number;
+};
+
+export type NonProductivityCategory = "Game" | "Social media" | "Binge" | "Series" | "Other";
+
+export type NonProductivityHistoryDay = {
+  date: string;
+  seconds: number;
+  categories: Partial<Record<NonProductivityCategory, number>>;
+  updatedAt: number;
+};
+
 export type Settings = {
   theme: ThemePreference;
   soundEnabled: boolean;

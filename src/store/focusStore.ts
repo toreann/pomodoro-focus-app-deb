@@ -1,7 +1,16 @@
 import { create } from "zustand";
 import { DEFAULT_SETTINGS, PRESET_ROUTINES } from "../constants";
-import { deleteTaskRecord, loadFocusappData, saveSettings, saveTask, saveTasks } from "../lib/storage";
-import type { PresetRoutine, Settings, Task } from "../types";
+import {
+  deleteTaskRecord,
+  incrementFocusHistoryDay,
+  incrementNonProductivityHistoryDay,
+  loadFocusappData,
+  saveSettings,
+  saveTask,
+  saveTasks,
+} from "../lib/storage";
+import { formatLocalDateKey, sortFocusHistoryDays } from "../lib/time";
+import type { FocusHistoryDay, NonProductivityCategory, NonProductivityHistoryDay, PresetRoutine, Settings, Task } from "../types";
 
 type NewTaskInput = {
   name: string;
@@ -16,6 +25,8 @@ type QueuedTaskUpdate = {
 
 type FocusState = {
   tasks: Task[];
+  focusHistory: FocusHistoryDay[];
+  nonProductivityHistory: NonProductivityHistoryDay[];
   settings: Settings;
   isHydrated: boolean;
   isRunning: boolean;
@@ -36,6 +47,8 @@ type FocusState = {
   reorderQueuedTask: (taskId: string, nextPosition: number) => Promise<void>;
   setActiveRemaining: (remainingSeconds: number) => Promise<void>;
   adjustActiveTime: (deltaSeconds: number) => Promise<void>;
+  addFocusTime: (elapsedSeconds: number) => Promise<void>;
+  addNonProductivityTime: (category: NonProductivityCategory, elapsedSeconds: number) => Promise<void>;
   updateSettings: (settings: Partial<Settings>) => Promise<void>;
   clearStorageError: () => void;
 };
@@ -135,6 +148,8 @@ async function guardedPersist(action: () => Promise<void>, setError: (message: s
 
 export const useFocusStore = create<FocusState>()((set, get) => ({
   tasks: [],
+  focusHistory: [],
+  nonProductivityHistory: [],
   settings: DEFAULT_SETTINGS,
   isHydrated: false,
   isRunning: false,
@@ -143,11 +158,13 @@ export const useFocusStore = create<FocusState>()((set, get) => ({
 
   initialize: async () => {
     try {
-      const { tasks, settings } = await loadFocusappData();
+      const { tasks, settings, focusHistory, nonProductivityHistory } = await loadFocusappData();
       const normalizedTasks = normalizeLoadedTasks(tasks);
 
       set({
         tasks: normalizedTasks,
+        focusHistory: sortFocusHistoryDays(focusHistory),
+        nonProductivityHistory: sortFocusHistoryDays(nonProductivityHistory),
         settings,
         isHydrated: true,
         isRunning: false,
@@ -158,6 +175,8 @@ export const useFocusStore = create<FocusState>()((set, get) => ({
       await saveSettings(settings);
     } catch (error) {
       set({
+        focusHistory: [],
+        nonProductivityHistory: [],
         settings: DEFAULT_SETTINGS,
         isHydrated: true,
         isRunning: false,
@@ -471,6 +490,57 @@ export const useFocusStore = create<FocusState>()((set, get) => ({
 
     set({ tasks, isRunning: nextRemaining > 0 ? get().isRunning : false });
     await guardedPersist(() => saveTask(tasks.find((task) => task.id === activeTask.id)!), (message) =>
+      set({ storageError: message }),
+    );
+  },
+
+  addFocusTime: async (elapsedSeconds) => {
+    const seconds = Math.floor(elapsedSeconds);
+    if (seconds <= 0) {
+      return;
+    }
+
+    const date = formatLocalDateKey();
+    const currentDay = get().focusHistory.find((day) => day.date === date);
+    const updatedDay: FocusHistoryDay = {
+      date,
+      focusedSeconds: (currentDay?.focusedSeconds ?? 0) + seconds,
+      updatedAt: now(),
+    };
+    const focusHistory = sortFocusHistoryDays(
+      currentDay
+        ? get().focusHistory.map((day) => (day.date === date ? updatedDay : day))
+        : [...get().focusHistory, updatedDay],
+    );
+
+    set({ focusHistory });
+    await guardedPersist(() => incrementFocusHistoryDay(date, seconds), (message) => set({ storageError: message }));
+  },
+
+  addNonProductivityTime: async (category, elapsedSeconds) => {
+    const seconds = Math.floor(elapsedSeconds);
+    if (seconds <= 0) {
+      return;
+    }
+
+    const date = formatLocalDateKey();
+    const currentDay = get().nonProductivityHistory.find((day) => day.date === date);
+    const categories = { ...(currentDay?.categories ?? {}) };
+    categories[category] = (categories[category] ?? 0) + seconds;
+    const updatedDay: NonProductivityHistoryDay = {
+      date,
+      seconds: (currentDay?.seconds ?? 0) + seconds,
+      categories,
+      updatedAt: now(),
+    };
+    const nonProductivityHistory = sortFocusHistoryDays(
+      currentDay
+        ? get().nonProductivityHistory.map((day) => (day.date === date ? updatedDay : day))
+        : [...get().nonProductivityHistory, updatedDay],
+    );
+
+    set({ nonProductivityHistory });
+    await guardedPersist(() => incrementNonProductivityHistoryDay(date, category, seconds), (message) =>
       set({ storageError: message }),
     );
   },

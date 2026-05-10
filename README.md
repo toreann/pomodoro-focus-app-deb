@@ -1,8 +1,10 @@
 # Focusapp
 
-Focusapp is a simple desktop productivity timer for planning and finishing focused work sessions. It lets you build a small task queue, run one timer at a time, track completed tasks, and keep your settings saved locally.
+Focusapp is a compact desktop timer for focused work, flexible focus sessions, and intentional leisure limits. It lets you build a task queue, run focus without a task, review day-by-day productivity history, and track No-count time from Pastime Control separately.
 
 The app is built with Tauri, React, TypeScript, Tailwind CSS, Zustand, and SQLite.
+
+Current version: `0.2.0`
 
 ## Features
 
@@ -11,6 +13,11 @@ The app is built with Tauri, React, TypeScript, Tailwind CSS, Zustand, and SQLit
 - Move queued tasks around with drag and drop.
 - Edit or delete queued tasks before they start.
 - See total queue time and estimated finish time.
+- Run a no-task focus timer with a custom break reminder.
+- Use Pastime Control to limit gaming, social media, binge watching, series, or other leisure.
+- Repeat the chime when a task, focus interval, or Pastime Control limit needs attention.
+- Review day-by-day Productivity History.
+- Review No-count history separately from productivity totals.
 - Use built-in preset routines:
   - Deep Work
   - Job Search
@@ -19,7 +26,7 @@ The app is built with Tauri, React, TypeScript, Tailwind CSS, Zustand, and SQLit
 - Clear queued or completed tasks.
 - Choose from multiple themes.
 - Turn sound, confetti, and overtime mode on or off.
-- Save tasks and settings locally.
+- Save tasks, settings, productivity history, and No-count history locally.
 
 ## Tech Stack
 
@@ -121,7 +128,7 @@ Runs the time-formatting tests.
 
 ## Data Storage
 
-In the desktop app, Focusapp stores tasks and settings in a local SQLite database named `focusapp.db` inside the app data directory.
+In the desktop app, Focusapp stores tasks, settings, productivity history, and No-count history in a local SQLite database named `focusapp.db` inside the app data directory.
 
 When running in a browser-only development environment, the app falls back to `localStorage`.
 
@@ -129,12 +136,39 @@ The app also includes a small migration path for older database locations. If an
 
 ## How to Use
 
+### Task Timer
+
 1. Add a task with a name, emoji, and duration.
 2. Add more tasks or choose a preset routine.
 3. Press play to start the next task.
 4. Pause, resume, reset, or adjust the timer as needed.
 5. Mark the task complete when it is finished.
 6. Review completed tasks or clear them when you are done.
+
+### No-Task Focus Timer
+
+1. Press **Start focus timer** when no task is active.
+2. Choose after how many minutes you want the 5-minute break reminder.
+3. Let the timer run while you focus.
+4. When the interval is reached, the chime repeats until you press **Stop timer**.
+5. This time counts toward Productivity History.
+
+### Pastime Control
+
+1. Press **Pastime Control** when no task or focus timer is active.
+2. Choose a category: Game, Social media, Binge, Series, or Other.
+3. Choose how many minutes you want to allow.
+4. When the limit is reached, the chime repeats until you press **Stop Pastime Control**.
+5. This time is recorded as **No-count** history and does not count toward productivity totals.
+
+### History
+
+Open **Productivity History** from the app header to see:
+
+- Focused time by day.
+- Total productive focus time.
+- No-count time by day with a red **No-count** mark.
+- Category breakdowns for Pastime Control sessions.
 
 ## Settings
 
@@ -185,13 +219,13 @@ npm run tauri build -- --bundles deb
 The generated Debian package is written to:
 
 ```txt
-src-tauri/target/release/bundle/deb/Focusapp_0.1.1_amd64.deb
+src-tauri/target/release/bundle/deb/Focusapp_0.2.0_amd64.deb
 ```
 
 Install it locally:
 
 ```sh
-sudo apt install ./src-tauri/target/release/bundle/deb/Focusapp_0.1.1_amd64.deb
+sudo apt install ./src-tauri/target/release/bundle/deb/Focusapp_0.2.0_amd64.deb
 ```
 
 After installation, the executable is available at:
@@ -216,6 +250,6 @@ If you copy `Focusapp.desktop` to `~/Desktop` on GNOME and see an "Untrusted Des
 
 ## Notes
 
-- This project is private and currently marked as version `0.1.1`.
+- This project is private and currently marked as version `0.2.0`.
 - The Tauri window is configured for a compact timer layout.
 - Generated folders such as `dist/`, `node_modules/`, and `src-tauri/target/` should not be edited by hand.

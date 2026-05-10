@@ -23,6 +23,7 @@ type UseTimerOptions = {
   onComplete: () => Promise<void>;
   onSetRemaining: (remainingSeconds: number) => Promise<void>;
   onAdjustTime: (deltaSeconds: number) => Promise<void>;
+  onFocusElapsed: (elapsedSeconds: number) => Promise<void>;
 };
 
 export function useTimer({
@@ -36,6 +37,7 @@ export function useTimer({
   onComplete,
   onSetRemaining,
   onAdjustTime,
+  onFocusElapsed,
 }: UseTimerOptions) {
   const runRef = useRef<TimerRun | null>(null);
   const overtimeStartedAtMs = useRef<number | null>(null);
@@ -85,7 +87,11 @@ export function useTimer({
       setRemainingSeconds(nextRemaining);
 
       if (nextRemaining !== run.lastPersistedRemainingSeconds) {
+        const elapsedSeconds = Math.max(0, run.lastPersistedRemainingSeconds - nextRemaining);
         run.lastPersistedRemainingSeconds = nextRemaining;
+        if (elapsedSeconds > 0) {
+          void onFocusElapsed(elapsedSeconds);
+        }
         void onSetRemaining(nextRemaining);
       }
     };
@@ -94,7 +100,7 @@ export function useTimer({
     const interval = window.setInterval(syncRemaining, TIMER_TICK_MS);
 
     return () => window.clearInterval(interval);
-  }, [activeTask?.durationSeconds, activeTask?.id, isRunning, onSetRemaining]);
+  }, [activeTask?.durationSeconds, activeTask?.id, isRunning, onFocusElapsed, onSetRemaining]);
 
   useEffect(() => {
     if (!overtimeEnabled || !activeTask || activeTask.remainingSeconds > 0) {
